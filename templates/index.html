@@ -1,0 +1,195 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>Money Noodle Crypto Chart</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <style>
+        :root {
+            --accent: #2d9cdb;
+            --bg: #f8fafc;
+            --card-bg: #ffffff;
+            --shadow: 0 4px 24px rgba(60,72,88,.07), 0 1.5px 6px rgba(0,0,0,.03);
+        }
+        body {
+            background: var(--bg);
+            font-family: 'Segoe UI', 'Roboto', Arial, sans-serif;
+            margin: 0;
+            padding: 0;
+        }
+        .container {
+            max-width: 480px;
+            margin: 3rem auto;
+            padding: 1.5rem;
+            background: var(--card-bg);
+            border-radius: 1.5rem;
+            box-shadow: var(--shadow);
+        }
+        h1 {
+            text-align: center;
+            color: var(--accent);
+            margin-top: 0;
+        }
+        form {
+            display: flex;
+            flex-direction: column;
+            gap: 1rem;
+            margin-bottom: 1.5rem;
+        }
+        label {
+            font-weight: 500;
+            margin-bottom: 0.25rem;
+        }
+        select, button {
+            width: 100%;
+            padding: 0.75rem;
+            border: 1px solid #e3e8ee;
+            border-radius: 0.75rem;
+            font-size: 1rem;
+            margin-bottom: 0.25rem;
+        }
+        button {
+            background: var(--accent);
+            color: white;
+            border: none;
+            cursor: pointer;
+            font-weight: bold;
+            transition: background 0.2s;
+        }
+        button:hover {
+            background: #217dbb;
+        }
+        .error {
+            color: #e74c3c;
+            background: #fbeaea;
+            border-radius: 0.5rem;
+            padding: 0.75rem;
+            margin-bottom: 1rem;
+            font-size: 1rem;
+            text-align: center;
+        }
+        .signal-badge {
+            display: inline-block;
+            padding: 0.4em 1.2em;
+            font-size: 1.25em;
+            font-weight: bold;
+            border-radius: 2em;
+            margin-left: 0.5em;
+            background: #e0e0e0;
+            color: #222;
+        }
+        .signal-buy { background: #dafbe1; color: #179849; }
+        .signal-sell { background: #ffe1e1; color: #d43d2e; }
+        .signal-wait { background: #f0f4f8; color: #4b6478; }
+        ul {
+            padding-left: 1.2em;
+            margin-bottom: 1.5em;
+        }
+        @media (max-width: 600px) {
+            .container {
+                max-width: 100vw;
+                border-radius: 0;
+                margin: 0;
+                padding: 0.5rem;
+            }
+            h1 { font-size: 1.2rem; }
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>Money Noodle Crypto Chart</h1>
+        <form method="POST">
+            <div>
+                <label for="exchange">Exchange</label>
+                <select name="exchange" id="exchange" onchange="this.form.submit()">
+                    {% for ex in exchanges %}
+                        <option value="{{ ex }}" {% if ex == selected_exchange %}selected{% endif %}>{{ ex }}</option>
+                    {% endfor %}
+                </select>
+            </div>
+            <div>
+                <label for="symbol">Ticker</label>
+                <select name="symbol" id="symbol">
+                    {% for s in symbols %}
+                        <option value="{{ s }}" {% if s == selected_symbol %}selected{% endif %}>{{ s }}</option>
+                    {% endfor %}
+                </select>
+            </div>
+            <div>
+                <label for="band_type">Band Type</label>
+                <select name="band_type" id="band_type">
+                    <option value="ATR" {% if band_type == 'ATR' %}selected{% endif %}>ATR</option>
+                    <option value="StdDev" {% if band_type == 'StdDev' %}selected{% endif %}>Standard Deviation</option>
+                </select>
+            </div>
+            <div>
+                <label for="timeframe">Timeframe</label>
+                <select name="timeframe" id="timeframe">
+                    {% for tf in timeframes %}
+                        <option value="{{ tf }}" {% if tf == selected_timeframe %}selected{% endif %}>{{ tf }}</option>
+                    {% endfor %}
+                </select>
+            </div>
+            <button type="submit">Show Chart</button>
+        </form>
+        {% if error %}
+          <div class="error">{{ error }}</div>
+        {% endif %}
+        {% if signal %}
+            <h2>
+                Signal:
+                <span class="signal-badge 
+                    {% if signal == 'BUY' %}signal-buy
+                    {% elif signal == 'SELL' %}signal-sell
+                    {% else %}signal-wait{% endif %}">
+                    {{ signal }}
+                </span>
+            </h2>
+            <ul>
+            {% for r in reasons %}
+                <li>{{ r }}</li>
+            {% endfor %}
+            </ul>
+        {% endif %}
+        {% if stop_loss or take_profit %}
+            <div style="margin-bottom:1em; padding:0.7em 1em; background:#f6f8fa; border-radius:0.7em;">
+                <b>
+                {% if signal == "WAIT" %}
+                    Levels to Watch:
+                {% else %}
+                    Trade Management:
+                {% endif %}
+                </b>
+                <ul style="margin:0.5em 0 0 1.1em;">
+                    <li>Current Price: <b>{{ current_price|round(3) }}</b></li>
+                    {% if stop_loss %}
+                        <li>
+                        Potential Stop Loss: <b>{{ stop_loss|round(3) }}</b>
+                        <span style="color: #d43d2e;">({{ sl_pct|round(2) }}% away)</span>
+                        </li>
+                    {% endif %}
+                    {% if take_profit %}
+                        <li>
+                        Potential Take Profit: <b>{{ take_profit|round(3) }}</b>
+                        <span style="color: #179849;">({{ tp_pct|round(2) }}% away)</span>
+                        </li>
+                    {% endif %}
+                </ul>
+                <small>
+                {% if signal == "WAIT" %}
+                    If price bounces or rejects these levels with volume, watch for a setup!
+                {% else %}
+                    These levels are guides—always manage your risk!
+                {% endif %}
+                </small>
+            </div>
+        {% endif %}
+
+
+        <div>
+            {{ chart_div|safe }}
+        </div>
+    </div>
+</body>
+</html>
