@@ -1,0 +1,6 @@
+Flask
+ccxt
+yfinance
+pandas
+numpy
+plotly
