@@ -1,5 +1,6 @@
 from flask import Flask, render_template, request
 import ccxt
+import yfinance as yf
 import pandas as pd
 import numpy as np
 import plotly.graph_objs as go
@@ -7,17 +8,18 @@ import plotly.offline as pyo
 
 app = Flask(__name__)
 
-EXCHANGES = {
-    'Kraken': ccxt.kraken(),
-    'Coinbase': ccxt.coinbase()
+DATA_SOURCES = {
+    'Kraken': {'type': 'crypto', 'client': ccxt.kraken()},
+    'Coinbase': {'type': 'crypto', 'client': ccxt.coinbase()},
+    'Yahoo Finance': {'type': 'stock', 'client': None} # yfinance doesn't need a client object like ccxt
 }
 
 ALLOWED_TIMEFRAMES = ['1h', '4h', '1d', '1w']
 DEFAULT_LIMITS = {'1h': 200, '4h': 150, '1d': 100, '1w': 52}
 
 def get_signal(df):
-    if len(df) < 20:
-        return "WAIT", ["Not enough data to compute indicators."], None, None, None, None
+    if len(df) < 34:  # Ensure enough data for EMA34
+        return "WAIT", ["Insufficient data for indicators."], None, None, None, None, None
 
     df = df.copy()
     df['sma20_volume'] = df['volume'].rolling(20).mean()
@@ -30,14 +32,26 @@ def get_signal(df):
     stop_loss = None
     take_profit = None
 
-    price_bounce = prev['close'] < prev['lower'] and last['close'] > last['lower']
-    ema_bullish = all(df['ema8'].iloc[i] > df['ema21'].iloc[i] > df['ema34'].iloc[i] for i in range(-3, 0))
-    rsi_not_overbought = last['rsi'] < 65
-    volume_high = last['volume'] > 1.2 * sma20_volume
+    # Loosen Band Conditions: Add proximity check
+    price_near_lower = abs(last['close'] - last['lower']) / last['close'] < 0.01
+    price_bounce = (prev['close'] < prev['lower'] and last['close'] > last['lower']) or price_near_lower
 
-    price_reject = prev['close'] > prev['upper'] and last['close'] < last['upper']
-    ema_bearish = all(df['ema8'].iloc[i] < df['ema21'].iloc[i] < df['ema34'].iloc[i] for i in range(-3, 0))
-    rsi_not_oversold = last['rsi'] > 35
+    # Relax EMA Conditions: Check only the most recent candle
+    ema_bullish = last['ema8'] > last['ema21'] > last['ema34']
+    # Fine-Tune RSI Thresholds: Widen range
+    rsi_not_overbought = last['rsi'] < 70
+    # Adjust Volume Threshold: Lower multiplier
+    volume_high = last['volume'] > 1.0 * sma20_volume
+
+    price_near_upper = abs(last['close'] - last['upper']) / last['close'] < 0.01
+    price_reject = (prev['close'] > prev['upper'] and last['close'] < last['upper']) or price_near_upper
+
+    ema_bearish = last['ema8'] < last['ema21'] < last['ema34']
+    rsi_not_oversold = last['rsi'] > 30
+
+    # Debugging Output
+    print(f"DEBUG: Price Bounce: {price_bounce}, EMA Bullish: {ema_bullish}, RSI: {last['rsi']}, Volume High: {volume_high}")
+    print(f"DEBUG: Price Reject: {price_reject}, EMA Bearish: {ema_bearish}")
 
     # Always show levels to watch
     stop_loss = min(df['low'].tail(3))  # recent swing low
@@ -76,18 +90,65 @@ def get_signal(df):
 
     return signal, reasons, stop_loss, take_profit, current_price, sl_pct, tp_pct
 
-def get_symbols(exchange):
-    """Return sorted list of available trading pairs for the selected exchange."""
-    try:
-        markets = exchange.load_markets()
-        return sorted(markets.keys())
-    except Exception as e:
+def get_symbols(source_name):
+    """Return sorted list of available trading pairs/tickers for the selected source."""
+    source_info = DATA_SOURCES.get(source_name)
+    if not source_info:
         return []
 
-def fetch_ohlcv(exchange, symbol, timeframe='1w', limit=100):
-    bars = exchange.fetch_ohlcv(symbol, timeframe=timeframe, limit=limit)
-    df = pd.DataFrame(bars, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
-    df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
+    if source_info['type'] == 'crypto':
+        exchange = source_info['client']
+        try:
+            markets = exchange.load_markets()
+            return sorted(markets.keys())
+        except Exception as e:
+            print(f"Error fetching crypto symbols from {source_name}: {e}")
+            return []
+    elif source_info['type'] == 'stock':
+        # For yfinance, provide a predefined list of popular tickers
+        return sorted(['SPY', 'QQQ', 'DIA', 'AAPL', 'MSFT', 'GOOGL', 'AMZN', 'TSLA', 'NVDA', 'META'])
+    return []
+
+def fetch_ohlcv(source_name, symbol, timeframe='1w', limit=100):
+    source_info = DATA_SOURCES.get(source_name)
+    if not source_info:
+        raise ValueError(f"Unknown data source: {source_name}")
+
+    df = pd.DataFrame()
+    if source_info['type'] == 'crypto':
+        exchange = source_info['client']
+        bars = exchange.fetch_ohlcv(symbol, timeframe=timeframe, limit=limit)
+        df = pd.DataFrame(bars, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
+        df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
+    elif source_info['type'] == 'stock':
+        # yfinance uses different timeframe strings and limits
+        yf_timeframe_map = {
+            '1h': '60m', # yfinance supports 60m for intraday
+            '4h': '4h',  # yfinance supports 4h
+            '1d': '1d',
+            '1w': '1wk'
+        }
+        yf_period_map = {
+            '1h': '7d', # 7 days for 1h data
+            '4h': '60d', # 60 days for 4h data
+            '1d': '2y', # 2 years for 1d data
+            '1w': '5y'  # 5 years for 1w data
+        }
+        
+        interval = yf_timeframe_map.get(timeframe, '1d')
+        period = yf_period_map.get(timeframe, '2y')
+
+        ticker = yf.Ticker(symbol)
+        # Fetch data using period and interval
+        data = ticker.history(period=period, interval=interval)
+        if not data.empty:
+            df = data[['Open', 'High', 'Low', 'Close', 'Volume']].copy()
+            df.columns = ['open', 'high', 'low', 'close', 'volume']
+            df['timestamp'] = df.index
+            df = df.reset_index(drop=True) # Reset index to make it 0-based
+        else:
+            raise ValueError(f"No data fetched for {symbol} from Yahoo Finance.")
+
     return df
 
 def money_noodle(df, length=20, mult=2, band_type='ATR'):
@@ -126,40 +187,38 @@ def money_noodle(df, length=20, mult=2, band_type='ATR'):
 def index():
     chart_div = ""
     error = None
-    exchanges = list(EXCHANGES.keys())
-    selected_exchange = 'Kraken'
+    data_sources = list(DATA_SOURCES.keys())
+    selected_source = 'Kraken' # Changed from selected_exchange
     selected_symbol = 'SOL/USD'
     band_type = 'ATR'
     selected_timeframe = '1w'
     timeframes = ALLOWED_TIMEFRAMES
 
-    symbols = get_symbols(EXCHANGES[selected_exchange])
+    # Get symbols based on the initial selected source
+    symbols = get_symbols(selected_source)
 
     if request.method == 'POST':
-        selected_exchange = request.form.get('exchange', exchanges[0])
-        selected_symbol = request.form.get('symbol', symbols[0])
+        selected_source = request.form.get('exchange', data_sources[0])
+        # Prioritize typed input over dropdown selection
+        selected_symbol_input = request.form.get('symbol_input', '').strip().upper()
+        selected_symbol_dropdown = request.form.get('symbol_dropdown', '')
+        
+        if selected_symbol_input:
+            selected_symbol = selected_symbol_input
+        else:
+            selected_symbol = selected_symbol_dropdown
+
         band_type = request.form.get('band_type', 'ATR')
         selected_timeframe = request.form.get('timeframe', '1w')
-        symbols = get_symbols(EXCHANGES[selected_exchange])
+        symbols = get_symbols(selected_source) # Update symbols based on new source
 
-    if selected_symbol not in symbols:
-        error = "Selected pair not available. Please select a different one."
-        return render_template(
-            'index.html',
-            chart_div=chart_div,
-            error=error,
-            exchanges=exchanges,
-            selected_exchange=selected_exchange,
-            symbols=symbols,
-            selected_symbol=selected_symbol,
-            band_type=band_type,
-            timeframes=timeframes,                  # <-- ADD THIS!
-            selected_timeframe=selected_timeframe   # <-- AND THIS!
-        )
-
+    # No explicit check here, let the try-except block handle invalid symbols during data fetch.
+    # Ensure selected_symbol is passed to template for persistence in input field
+    
     try:
+        # Limit is less relevant for yfinance with period/interval, but keep for crypto
         limit = DEFAULT_LIMITS.get(selected_timeframe, 100)
-        df = fetch_ohlcv(EXCHANGES[selected_exchange], selected_symbol, selected_timeframe, limit)
+        df = fetch_ohlcv(selected_source, selected_symbol, selected_timeframe, limit)
         df = money_noodle(df, band_type=band_type)
         signal, reasons, stop_loss, take_profit, current_price, sl_pct, tp_pct = get_signal(df)
         # Create plotly chart
@@ -204,16 +263,119 @@ def index():
         fig = go.Figure(data=data, layout=layout)
         chart_div = pyo.plot(fig, output_type='div', include_plotlyjs=True)
     except Exception as e:
-        error = f"Could not fetch or plot data for {selected_symbol} on {selected_exchange}. Error: {e}"
+        error = f"Could not fetch or plot data for {selected_symbol} from {selected_source}. Error: {e}"
         # Provide fallback values
         signal = None
         reasons = None
+        stop_loss = None
+        take_profit = None
+        current_price = None
+        sl_pct = None
+        tp_pct = None
         return render_template(
             'index.html',
             chart_div=chart_div,
             error=error,
-            exchanges=exchanges,
-            selected_exchange=selected_exchange,
+            exchanges=data_sources,
+            selected_exchange=selected_source,
+            symbols=symbols,
+            selected_symbol=selected_symbol, # Pass selected_symbol to persist typed value
+            band_type=band_type,
+            timeframes=timeframes,
+            selected_timeframe=selected_timeframe,
+            signal=signal,
+            reasons=reasons,
+            stop_loss=stop_loss,
+            take_profit=take_profit,
+            current_price=current_price,
+            sl_pct=sl_pct,
+            tp_pct=tp_pct
+        )
+
+
+    return render_template(
+        'index.html',
+        chart_div=chart_div,
+        error=error,
+        exchanges=data_sources,
+        selected_exchange=selected_source,
+        symbols=symbols,
+        selected_symbol=selected_symbol, # Pass selected_symbol to persist typed value
+        band_type=band_type,
+        timeframes=timeframes,
+        selected_timeframe=selected_timeframe,
+        signal=signal,
+        reasons=reasons,
+        stop_loss=stop_loss,
+        take_profit=take_profit,
+        current_price=current_price,
+        sl_pct=sl_pct,
+        tp_pct=tp_pct
+    )
+
+    try:
+        # Limit is less relevant for yfinance with period/interval, but keep for crypto
+        limit = DEFAULT_LIMITS.get(selected_timeframe, 100)
+        df = fetch_ohlcv(selected_source, selected_symbol, selected_timeframe, limit)
+        df = money_noodle(df, band_type=band_type)
+        signal, reasons, stop_loss, take_profit, current_price, sl_pct, tp_pct = get_signal(df)
+        # Create plotly chart
+        trace_candles = go.Candlestick(
+            x=df['timestamp'], open=df['open'], high=df['high'],
+            low=df['low'], close=df['close'], name='Candles'
+        )
+        trace_ema = go.Scatter(
+            x=df['timestamp'], y=df['ema'], line=dict(color='blue'), name='EMA'
+        )
+        trace_upper = go.Scatter(
+            x=df['timestamp'], y=df['upper'], line=dict(color='green', dash='dash'), name='Upper Band'
+        )
+        trace_lower = go.Scatter(
+            x=df['timestamp'], y=df['lower'], line=dict(color='red', dash='dash'), name='Lower Band'
+        )
+        # EMA Ribbon
+        ribbon_traces = []
+        for n, color in zip([8, 21, 34], ['orange', 'purple', 'teal']):
+            ribbon_traces.append(go.Scatter(
+                x=df['timestamp'], y=df[f'ema{n}'], line=dict(color=color, dash='dot'), name=f'EMA{n}'
+            ))
+
+        trace_volume = go.Bar(
+            x=df['timestamp'], y=df['volume'],
+            name='Volume', marker_color='lightgray',
+            yaxis='y2', opacity=0.5
+        )
+
+        layout = go.Layout(
+            title=f"{selected_symbol} Money Noodle",
+            xaxis=dict(title="Date"),
+            yaxis=dict(title="Price"),
+            yaxis2=dict(
+                title="Volume", overlaying='y', side='right', showgrid=False,
+                range=[0, df['volume'].max() * 2]  # auto-scale
+            ),
+            height=700
+        )
+
+        data = [trace_candles, trace_ema, trace_upper, trace_lower] + ribbon_traces + [trace_volume]
+        fig = go.Figure(data=data, layout=layout)
+        chart_div = pyo.plot(fig, output_type='div', include_plotlyjs=True)
+    except Exception as e:
+        error = f"Could not fetch or plot data for {selected_symbol} from {selected_source}. Error: {e}"
+        # Provide fallback values
+        signal = None
+        reasons = None
+        stop_loss = None
+        take_profit = None
+        current_price = None
+        sl_pct = None
+        tp_pct = None
+        return render_template(
+            'index.html',
+            chart_div=chart_div,
+            error=error,
+            exchanges=data_sources,
+            selected_exchange=selected_source,
             symbols=symbols,
             selected_symbol=selected_symbol,
             band_type=band_type,
@@ -233,13 +395,13 @@ def index():
         'index.html',
         chart_div=chart_div,
         error=error,
-        exchanges=exchanges,
-        selected_exchange=selected_exchange,
+        exchanges=data_sources,
+        selected_exchange=selected_source,
         symbols=symbols,
         selected_symbol=selected_symbol,
         band_type=band_type,
-        timeframes=timeframes,                  # <-- ADD THIS!
-        selected_timeframe=selected_timeframe,   # <-- AND THIS!
+        timeframes=timeframes,
+        selected_timeframe=selected_timeframe,
         signal=signal,
         reasons=reasons,
         stop_loss=stop_loss,

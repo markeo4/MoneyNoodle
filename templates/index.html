@@ -101,20 +101,22 @@
         <h1>Money Noodle Crypto Chart</h1>
         <form method="POST">
             <div>
-                <label for="exchange">Exchange</label>
+                <label for="exchange">Data Source</label>
                 <select name="exchange" id="exchange" onchange="this.form.submit()">
-                    {% for ex in exchanges %}
-                        <option value="{{ ex }}" {% if ex == selected_exchange %}selected{% endif %}>{{ ex }}</option>
+                    {% for source in exchanges %}
+                        <option value="{{ source }}" {% if source == selected_exchange %}selected{% endif %}>{{ source }}</option>
                     {% endfor %}
                 </select>
             </div>
             <div>
                 <label for="symbol">Ticker</label>
-                <select name="symbol" id="symbol">
+                <select name="symbol_dropdown" id="symbol_dropdown">
                     {% for s in symbols %}
                         <option value="{{ s }}" {% if s == selected_symbol %}selected{% endif %}>{{ s }}</option>
                     {% endfor %}
                 </select>
+                <label for="symbol_input">Or type ticker:</label>
+                <input type="text" name="symbol_input" id="symbol_input" value="{{ selected_symbol if selected_symbol not in symbols else '' }}" placeholder="e.g., SPY, BTC/USD">
             </div>
             <div>
                 <label for="band_type">Band Type</label>
