@@ -40,7 +40,7 @@
             font-weight: 500;
             margin-bottom: 0.25rem;
         }
-        select, button {
+        select, button, input[type="text"] {
             width: 100%;
             padding: 0.75rem;
             border: 1px solid #e3e8ee;
@@ -81,6 +81,51 @@
         .signal-buy { background: #dafbe1; color: #179849; }
         .signal-sell { background: #ffe1e1; color: #d43d2e; }
         .signal-wait { background: #f0f4f8; color: #4b6478; }
+        .signal-level-badge {
+            display: inline-block;
+            margin-left: 0.7em;
+            padding: 0.3em 0.9em;
+            font-size: 1.1em;
+            border-radius: 1em;
+            background: #c0e7fa;
+            color: #257ea7;
+            font-weight: 700;
+        }
+        .score-table {
+            width: 100%;
+            margin-top: 1.5em;
+            margin-bottom: 1.5em;
+            border-collapse: collapse;
+            background: #f4faff;
+            border-radius: 1em;
+            box-shadow: 0 1px 4px rgba(60,72,88,0.08);
+            overflow: hidden;
+        }
+        .score-table th, .score-table td {
+            padding: 0.6em 0.9em;
+            text-align: left;
+            border-bottom: 1px solid #e9f3fa;
+        }
+        .score-table th {
+            background: #e6f3fa;
+            font-weight: 600;
+        }
+        .score-table tr:last-child td {
+            border-bottom: none;
+        }
+        .indicator-card {
+            background: #f5fafd;
+            padding: 1em 1.2em;
+            border-radius: 1em;
+            margin-bottom: 1.5em;
+            box-shadow: 0 1px 4px rgba(60,72,88,0.06);
+        }
+        .component-title {
+            font-size: 1.1em;
+            margin-bottom: 0.3em;
+            color: #2d9cdb;
+            font-weight: 600;
+        }
         ul {
             padding-left: 1.2em;
             margin-bottom: 1.5em;
@@ -102,7 +147,7 @@
         <form method="POST">
             <div>
                 <label for="exchange">Data Source</label>
-                <select name="exchange" id="exchange" onchange="this.form.submit()">
+                <select name="exchange" id="exchange" onchange="clearSymbolInputAndSubmit()">
                     {% for source in exchanges %}
                         <option value="{{ source }}" {% if source == selected_exchange %}selected{% endif %}>{{ source }}</option>
                     {% endfor %}
@@ -116,7 +161,9 @@
                     {% endfor %}
                 </select>
                 <label for="symbol_input">Or type ticker:</label>
-                <input type="text" name="symbol_input" id="symbol_input" value="{{ selected_symbol if selected_symbol not in symbols else '' }}" placeholder="e.g., SPY, BTC/USD">
+                <input type="text" name="symbol_input" id="symbol_input"
+                    value="{{ selected_symbol if selected_symbol not in symbols else '' }}" 
+                    placeholder="e.g., SPY, BTC/USD">
             </div>
             <div>
                 <label for="band_type">Band Type</label>
@@ -138,21 +185,72 @@
         {% if error %}
           <div class="error">{{ error }}</div>
         {% endif %}
+
         {% if signal %}
             <h2>
                 Signal:
                 <span class="signal-badge 
-                    {% if signal == 'BUY' %}signal-buy
-                    {% elif signal == 'SELL' %}signal-sell
-                    {% else %}signal-wait{% endif %}">
-                    {{ signal }}
-                </span>
+                    {% if signal == 'BUY' or signal == 'STRONG BUY' %}signal-buy
+                    {% elif signal == 'SELL' or signal == 'STRONG SELL' %}signal-sell
+                    {% else %}signal-wait{% endif %}">{{ signal }}</span>
+                <span class="signal-level-badge">Level {{ signal_level }}/10</span>
             </h2>
-            <ul>
-            {% for r in reasons %}
-                <li>{{ r }}</li>
-            {% endfor %}
-            </ul>
+            <div class="indicator-card">
+                <div class="component-title">Indicator Values</div>
+                <table class="score-table">
+                    <tr>
+                        <th>RSI</th>
+                        <th>AO</th>
+                        <th>ADX</th>
+                        <th>+DI</th>
+                        <th>–DI</th>
+                        <th>EMA8</th>
+                        <th>EMA21</th>
+                        <th>EMA34</th>
+                    </tr>
+                    <tr>
+                        <td>{{ indicators.rsi }}</td>
+                        <td>{{ indicators.ao }}</td>
+                        <td>{{ indicators.adx }}</td>
+                        <td>{{ indicators.plus_di }}</td>
+                        <td>{{ indicators.minus_di }}</td>
+                        <td>{{ indicators.ema8 }}</td>
+                        <td>{{ indicators.ema21 }}</td>
+                        <td>{{ indicators.ema34 }}</td>
+                    </tr>
+                </table>
+                <div class="component-title">Component Scores</div>
+                <table class="score-table">
+                    <tr>
+                        <th>EMA</th>
+                        <th>RSI</th>
+                        <th>AO</th>
+                        <th>DMI</th>
+                        <th>TTM</th>
+                        <th>Price</th>
+                        <th>Volume</th>
+                        <th>Total</th>
+                    </tr>
+                    <tr>
+                        <td>{{ indicators.ema_score if indicators.ema_score is defined else "—" }}</td>
+                        <td>{{ indicators.rsi_score if indicators.rsi_score is defined else "—" }}</td>
+                        <td>{{ indicators.ao_score if indicators.ao_score is defined else "—" }}</td>
+                        <td>{{ indicators.dmi_score if indicators.dmi_score is defined else "—" }}</td>
+                        <td>{{ indicators.ttm_score if indicators.ttm_score is defined else "—" }}</td>
+                        <td>{{ indicators.price_score if indicators.price_score is defined else "—" }}</td>
+                        <td>{{ indicators.volume_score if indicators.volume_score is defined else "—" }}</td>
+                        <td><b>{{ indicators.total_score }}</b></td>
+                    </tr>
+                </table>
+            </div>
+            <div class="indicator-card">
+                <div class="component-title">Signal Reasoning</div>
+                <ul>
+                {% for r in reasons %}
+                    <li>{{ r }}</li>
+                {% endfor %}
+                </ul>
+            </div>
         {% endif %}
         {% if stop_loss or take_profit %}
             <div style="margin-bottom:1em; padding:0.7em 1em; background:#f6f8fa; border-radius:0.7em;">
@@ -188,10 +286,17 @@
             </div>
         {% endif %}
 
-
         <div>
             {{ chart_div|safe }}
         </div>
     </div>
+    <script>
+    function clearSymbolInputAndSubmit() {
+        // Clear the "Or type ticker" input
+        document.getElementById('symbol_input').value = '';
+        // Submit the form
+        document.querySelector('form').submit();
+    }
+    </script>
 </body>
 </html>

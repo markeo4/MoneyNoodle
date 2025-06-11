@@ -5,90 +5,283 @@ import pandas as pd
 import numpy as np
 import plotly.graph_objs as go
 import plotly.offline as pyo
+from ta.momentum import RSIIndicator
+from ta.trend import EMAIndicator
+from ta.volatility import AverageTrueRange
 
 app = Flask(__name__)
 
 DATA_SOURCES = {
     'Kraken': {'type': 'crypto', 'client': ccxt.kraken()},
     'Coinbase': {'type': 'crypto', 'client': ccxt.coinbase()},
-    'Yahoo Finance': {'type': 'stock', 'client': None} # yfinance doesn't need a client object like ccxt
+    'Yahoo Finance': {'type': 'stock', 'client': None}
 }
 
 ALLOWED_TIMEFRAMES = ['1h', '4h', '1d', '1w']
 DEFAULT_LIMITS = {'1h': 200, '4h': 150, '1d': 100, '1w': 52}
 
-def get_signal(df):
-    if len(df) < 34:  # Ensure enough data for EMA34
-        return "WAIT", ["Insufficient data for indicators."], None, None, None, None, None
+def calculate_awesome_oscillator(df, short_period=5, long_period=34):
+    """Calculate Awesome Oscillator"""
+    hl2 = (df['high'] + df['low']) / 2
+    ao_short = hl2.rolling(window=short_period).mean()
+    ao_long = hl2.rolling(window=long_period).mean()
+    ao = ao_short - ao_long
+    return ao
 
+def calculate_dmi_adx(df, period=14):
+    """Calculate DMI and ADX"""
     df = df.copy()
-    df['sma20_volume'] = df['volume'].rolling(20).mean()
-    sma20_volume = df['sma20_volume'].iloc[-1]
+    
+    # Calculate True Range
+    df['tr'] = np.maximum(df['high'] - df['low'],
+                         np.maximum(abs(df['high'] - df['close'].shift(1)),
+                                   abs(df['low'] - df['close'].shift(1))))
+    
+    # Calculate directional movements
+    df['plus_dm'] = np.where((df['high'] - df['high'].shift(1)) > (df['low'].shift(1) - df['low']),
+                            np.maximum(df['high'] - df['high'].shift(1), 0), 0)
+    df['minus_dm'] = np.where((df['low'].shift(1) - df['low']) > (df['high'] - df['high'].shift(1)),
+                             np.maximum(df['low'].shift(1) - df['low'], 0), 0)
+    
+    # Smooth the values using Wilder's smoothing
+    df['atr'] = df['tr'].ewm(alpha=1/period, adjust=False).mean()
+    df['plus_di_raw'] = df['plus_dm'].ewm(alpha=1/period, adjust=False).mean()
+    df['minus_di_raw'] = df['minus_dm'].ewm(alpha=1/period, adjust=False).mean()
+    
+    # Calculate DI values
+    df['plus_di'] = 100 * df['plus_di_raw'] / df['atr']
+    df['minus_di'] = 100 * df['minus_di_raw'] / df['atr']
+    
+    # Calculate DX and ADX
+    df['dx'] = 100 * abs(df['plus_di'] - df['minus_di']) / (df['plus_di'] + df['minus_di'])
+    df['adx'] = df['dx'].ewm(alpha=1/period, adjust=False).mean()
+    
+    return df['plus_di'], df['minus_di'], df['adx']
+
+def calculate_ttm_scalper(df, fast_period=8, slow_period=21):
+    """Calculate TTM Scalper momentum"""
+    fast_ema = df['close'].ewm(span=fast_period, adjust=False).mean()
+    slow_ema = df['close'].ewm(span=slow_period, adjust=False).mean()
+    momentum = fast_ema - slow_ema
+    return momentum
+
+def enhanced_money_noodle(df, atr_length=14, atr_multiplier=2.0, rsi_length=14, 
+                         volume_length=20, swing_lookback=15, dmi_length=14):
+    """Enhanced Money Noodle with 10-level signal system from ThinkOrSwim"""
+    df = df.copy()
+    
+    # Basic price calculations
+    df['hl2'] = (df['high'] + df['low']) / 2
+    
+    # EMA calculations
+    df['ema8'] = df['close'].ewm(span=8, adjust=False).mean()
+    df['ema21'] = df['close'].ewm(span=21, adjust=False).mean()
+    df['ema34'] = df['close'].ewm(span=34, adjust=False).mean()
+    
+    # RSI calculation
+    df['rsi'] = RSIIndicator(df['close'], window=rsi_length).rsi()
+    
+    # Awesome Oscillator
+    df['ao'] = calculate_awesome_oscillator(df)
+    df['ao_prev'] = df['ao'].shift(1)
+    df['ao_prev2'] = df['ao'].shift(2)
+    
+    # DMI and ADX
+    df['plus_di'], df['minus_di'], df['adx'] = calculate_dmi_adx(df, dmi_length)
+    
+    # TTM Scalper
+    df['ttm_momentum'] = calculate_ttm_scalper(df)
+    df['ttm_prev'] = df['ttm_momentum'].shift(1)
+    
+    # ATR for dynamic bands
+    df['atr'] = AverageTrueRange(df['high'], df['low'], df['close'], window=atr_length).average_true_range()
+    
+    # Dynamic price bands with RSI adjustment
+    df['rsi_adjustment'] = np.where((df['rsi'] > 70) | (df['rsi'] < 30), 1.5, 1.0)
+    df['adjusted_band_width'] = df['atr'] * atr_multiplier * df['rsi_adjustment']
+    df['upper'] = df['ema21'] + df['adjusted_band_width']
+    df['lower'] = df['ema21'] - df['adjusted_band_width']
+    
+    # Volume analysis
+    df['volume_sma'] = df['volume'].rolling(window=volume_length).mean()
+    
+    # Calculate signal conditions
+    # EMA trend conditions
+    df['ema_bullish'] = (df['ema8'] > df['ema21']) & (df['ema21'] > df['ema34'])
+    df['ema_bearish'] = (df['ema8'] < df['ema21']) & (df['ema21'] < df['ema34'])
+    
+    # Price band conditions
+    df['near_lower_band'] = abs(df['close'] - df['lower']) / df['lower'] <= 0.01
+    df['bounce_above_lower'] = (df['close'].shift(1) < df['lower'].shift(1)) & (df['close'] > df['lower'])
+    df['price_bullish'] = df['near_lower_band'] | df['bounce_above_lower']
+    
+    df['near_upper_band'] = abs(df['close'] - df['upper']) / df['upper'] <= 0.01
+    df['rejection_from_upper'] = (df['close'].shift(1) > df['upper'].shift(1)) & (df['close'] < df['upper'])
+    df['price_bearish'] = df['near_upper_band'] | df['rejection_from_upper']
+    
+    # RSI conditions
+    df['rsi_oversold'] = df['rsi'] < 30
+    df['rsi_bullish'] = (df['rsi'] >= 30) & (df['rsi'] < 50)
+    df['rsi_neutral'] = (df['rsi'] >= 50) & (df['rsi'] <= 70)
+    df['rsi_bearish'] = (df['rsi'] > 70) & (df['rsi'] <= 80)
+    df['rsi_overbought'] = df['rsi'] > 80
+    
+    # Awesome Oscillator signals
+    df['ao_bullish'] = (df['ao'] > 0) & (df['ao'] > df['ao_prev'])
+    df['ao_bearish'] = (df['ao'] < 0) & (df['ao'] < df['ao_prev'])
+    
+    # DMI signals
+    df['dmi_bullish'] = (df['plus_di'] > df['minus_di']) & (df['adx'] > 25)
+    df['dmi_bearish'] = (df['minus_di'] > df['plus_di']) & (df['adx'] > 25)
+    df['dmi_weak'] = df['adx'] <= 25
+    
+    # TTM Scalper signals
+    df['ttm_bullish'] = (df['ttm_momentum'] > 0) & (df['ttm_momentum'] > df['ttm_prev'])
+    df['ttm_bearish'] = (df['ttm_momentum'] < 0) & (df['ttm_momentum'] < df['ttm_prev'])
+    
+    # Volume conditions
+    df['volume_high'] = df['volume'] > 1.5 * df['volume_sma']
+    df['volume_normal'] = (df['volume'] > 1.0 * df['volume_sma']) & (df['volume'] <= 1.5 * df['volume_sma'])
+    df['volume_low'] = df['volume'] <= 1.0 * df['volume_sma']
+    
+    # Calculate scores for each component
+    df['ema_score'] = np.where(df['ema_bullish'], 2, np.where(df['ema_bearish'], -2, 0))
+    
+    df['rsi_score'] = np.where(df['rsi_oversold'], 2,
+                      np.where(df['rsi_bullish'], 1,
+                      np.where(df['rsi_neutral'], 0,
+                      np.where(df['rsi_bearish'], -1, -2))))
+    
+    df['ao_score'] = np.where(df['ao_bullish'], 2, np.where(df['ao_bearish'], -2, 0))
+    
+    df['dmi_score'] = np.where(df['dmi_bullish'], 2, np.where(df['dmi_bearish'], -2, 0))
+    
+    df['ttm_score'] = np.where(df['ttm_bullish'], 1, np.where(df['ttm_bearish'], -1, 0))
+    
+    df['price_score'] = np.where(df['price_bullish'], 1, np.where(df['price_bearish'], -1, 0))
+    
+    df['volume_score'] = np.where(df['volume_high'], 1, np.where(df['volume_normal'], 0, -1))
+    
+    # Total score calculation
+    df['total_score'] = (df['ema_score'] + df['rsi_score'] + df['ao_score'] + 
+                        df['dmi_score'] + df['ttm_score'] + df['price_score'] + df['volume_score'])
+    
+    # Convert to 10-level signal (scale -12 to +11 into 1 to 10)
+    df['signal_10_level'] = np.round((df['total_score'] + 12) * 10 / 23, 0)
+    df['signal_10_level'] = np.clip(df['signal_10_level'], 1, 10)
+    
+    # Signal categories
+    df['strong_sell'] = df['signal_10_level'] <= 2
+    df['sell'] = (df['signal_10_level'] >= 3) & (df['signal_10_level'] <= 4)
+    df['hold'] = (df['signal_10_level'] >= 5) & (df['signal_10_level'] <= 6)
+    df['buy'] = (df['signal_10_level'] >= 7) & (df['signal_10_level'] <= 8)
+    df['strong_buy'] = df['signal_10_level'] >= 9
+    
+    # Calculate swing highs and lows for risk management
+    df['swing_low'] = df['low'].rolling(window=swing_lookback).min()
+    df['swing_high'] = df['high'].rolling(window=swing_lookback).max()
+    
+    return df
+
+def get_enhanced_signal(df):
+    """Get enhanced signal based on 10-level system"""
+    if len(df) < 34:
+        return "WAIT", ["Insufficient data for indicators."], None, None, None, None, None, 1, {}
+    
     last = df.iloc[-1]
-    prev = df.iloc[-2]
-
-    signal = "WAIT"
-    reasons = []
-    stop_loss = None
-    take_profit = None
-
-    # Loosen Band Conditions: Add proximity check
-    price_near_lower = abs(last['close'] - last['lower']) / last['close'] < 0.01
-    price_bounce = (prev['close'] < prev['lower'] and last['close'] > last['lower']) or price_near_lower
-
-    # Relax EMA Conditions: Check only the most recent candle
-    ema_bullish = last['ema8'] > last['ema21'] > last['ema34']
-    # Fine-Tune RSI Thresholds: Widen range
-    rsi_not_overbought = last['rsi'] < 70
-    # Adjust Volume Threshold: Lower multiplier
-    volume_high = last['volume'] > 1.0 * sma20_volume
-
-    price_near_upper = abs(last['close'] - last['upper']) / last['close'] < 0.01
-    price_reject = (prev['close'] > prev['upper'] and last['close'] < last['upper']) or price_near_upper
-
-    ema_bearish = last['ema8'] < last['ema21'] < last['ema34']
-    rsi_not_oversold = last['rsi'] > 30
-
-    # Debugging Output
-    print(f"DEBUG: Price Bounce: {price_bounce}, EMA Bullish: {ema_bullish}, RSI: {last['rsi']}, Volume High: {volume_high}")
-    print(f"DEBUG: Price Reject: {price_reject}, EMA Bearish: {ema_bearish}")
-
-    # Always show levels to watch
-    stop_loss = min(df['low'].tail(3))  # recent swing low
-    take_profit = last['upper']         # upper band as TP
-
-    if price_bounce and ema_bullish and rsi_not_overbought and volume_high:
+    
+    # Determine signal based on 10-level system
+    if last['strong_buy']:
+        signal = "STRONG BUY"
+        signal_level = int(last['signal_10_level'])
+    elif last['buy']:
         signal = "BUY"
-        reasons.append("Price bounced above lower band. EMAs bullish for last 3 candles. RSI not overbought. Volume above average.")
-        stop_loss = min(df['low'].tail(3))
-        risk = last['close'] - stop_loss
-        take_profit = last['close'] + 2 * risk
-
-    if price_reject and ema_bearish and rsi_not_oversold and volume_high:
+        signal_level = int(last['signal_10_level'])
+    elif last['hold']:
+        signal = "HOLD"
+        signal_level = int(last['signal_10_level'])
+    elif last['sell']:
         signal = "SELL"
-        reasons.append("Price rejected from upper band. EMAs bearish for last 3 candles. RSI not oversold. Volume above average.")
-        stop_loss = max(df['high'].tail(3))
-        risk = stop_loss - last['close']
-        take_profit = last['close'] - 2 * risk
-
-    if signal == "WAIT":
-        reasons.append("No strong signal. Watching for bounce off lower band or rejection from upper band.")
-
-    if last['rsi'] > 75:
-        reasons.append("RSI is overbought—risk of pullback.")
-    elif last['rsi'] < 25:
-        reasons.append("RSI is oversold—risk of reversal.")
-
-    # Calculate % distances
+        signal_level = int(last['signal_10_level'])
+    elif last['strong_sell']:
+        signal = "STRONG SELL"
+        signal_level = int(last['signal_10_level'])
+    else:
+        signal = "WAIT"
+        signal_level = int(last['signal_10_level'])
+    
+    # Generate reasons based on component scores
+    reasons = []
+    reasons.append(f"Signal Level: {signal_level}/10 (Total Score: {last['total_score']:.0f})")
+    
+    # Add component analysis
+    if last['ema_bullish']:
+        reasons.append("✓ EMA trend is bullish (EMA8 > EMA21 > EMA34)")
+    elif last['ema_bearish']:
+        reasons.append("✗ EMA trend is bearish (EMA8 < EMA21 < EMA34)")
+    else:
+        reasons.append("~ EMA trend is mixed")
+    
+    if last['rsi'] < 30:
+        reasons.append("✓ RSI is oversold - potential bounce")
+    elif last['rsi'] > 70:
+        reasons.append("✗ RSI is overbought - potential pullback")
+    
+    if last['ao_bullish']:
+        reasons.append("✓ Awesome Oscillator is bullish")
+    elif last['ao_bearish']:
+        reasons.append("✗ Awesome Oscillator is bearish")
+    
+    if last['dmi_bullish']:
+        reasons.append("✓ DMI shows strong bullish trend")
+    elif last['dmi_bearish']:
+        reasons.append("✗ DMI shows strong bearish trend")
+    
+    if last['volume_high']:
+        reasons.append("✓ Volume is above average")
+    elif last['volume_low']:
+        reasons.append("✗ Volume is below average")
+    
+    # Calculate stop loss and take profit
     current_price = last['close']
-    sl_pct = None
-    tp_pct = None
-    if stop_loss and current_price:
-        sl_pct = 100.0 * abs(current_price - stop_loss) / current_price
-    if take_profit and current_price:
-        tp_pct = 100.0 * abs(current_price - take_profit) / current_price
-
-    return signal, reasons, stop_loss, take_profit, current_price, sl_pct, tp_pct
+    
+    if signal in ["BUY", "STRONG BUY"]:
+        stop_loss = last['swing_low']
+        risk = current_price - stop_loss
+        take_profit = current_price + 2 * risk
+    elif signal in ["SELL", "STRONG SELL"]:
+        stop_loss = last['swing_high']
+        risk = stop_loss - current_price
+        take_profit = current_price - 2 * risk
+    else:
+        stop_loss = last['swing_low']
+        take_profit = last['upper']
+    
+    # Calculate percentages
+    sl_pct = 100.0 * abs(current_price - stop_loss) / current_price if stop_loss else None
+    tp_pct = 100.0 * abs(current_price - take_profit) / current_price if take_profit else None
+    
+    # Additional indicator values for display
+    indicators = {
+        'rsi': round(last['rsi'], 1),
+        'ao': round(last['ao'], 4),
+        'adx': round(last['adx'], 1),
+        'plus_di': round(last['plus_di'], 1),
+        'minus_di': round(last['minus_di'], 1),
+        'total_score': int(last['total_score']),
+        'ema8': round(last['ema8'], 4),
+        'ema21': round(last['ema21'], 4),
+        'ema34': round(last['ema34'], 4),
+        'ema_score': int(last['ema_score']),
+        'rsi_score': int(last['rsi_score']),
+        'ao_score': int(last['ao_score']),
+        'dmi_score': int(last['dmi_score']),
+        'ttm_score': int(last['ttm_score']),
+        'price_score': int(last['price_score']),
+        'volume_score': int(last['volume_score']),
+    }
+    
+    return signal, reasons, stop_loss, take_profit, current_price, sl_pct, tp_pct, signal_level, indicators
 
 def get_symbols(source_name):
     """Return sorted list of available trading pairs/tickers for the selected source."""
@@ -105,7 +298,6 @@ def get_symbols(source_name):
             print(f"Error fetching crypto symbols from {source_name}: {e}")
             return []
     elif source_info['type'] == 'stock':
-        # For yfinance, provide a predefined list of popular tickers
         return sorted(['SPY', 'QQQ', 'DIA', 'AAPL', 'MSFT', 'GOOGL', 'AMZN', 'TSLA', 'NVDA', 'META'])
     return []
 
@@ -121,66 +313,32 @@ def fetch_ohlcv(source_name, symbol, timeframe='1w', limit=100):
         df = pd.DataFrame(bars, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
         df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
     elif source_info['type'] == 'stock':
-        # yfinance uses different timeframe strings and limits
         yf_timeframe_map = {
-            '1h': '60m', # yfinance supports 60m for intraday
-            '4h': '4h',  # yfinance supports 4h
+            '1h': '60m',
+            '4h': '4h',
             '1d': '1d',
             '1w': '1wk'
         }
         yf_period_map = {
-            '1h': '7d', # 7 days for 1h data
-            '4h': '60d', # 60 days for 4h data
-            '1d': '2y', # 2 years for 1d data
-            '1w': '5y'  # 5 years for 1w data
+            '1h': '7d',
+            '4h': '60d',
+            '1d': '2y',
+            '1w': '5y'
         }
         
         interval = yf_timeframe_map.get(timeframe, '1d')
         period = yf_period_map.get(timeframe, '2y')
 
         ticker = yf.Ticker(symbol)
-        # Fetch data using period and interval
         data = ticker.history(period=period, interval=interval)
         if not data.empty:
             df = data[['Open', 'High', 'Low', 'Close', 'Volume']].copy()
             df.columns = ['open', 'high', 'low', 'close', 'volume']
             df['timestamp'] = df.index
-            df = df.reset_index(drop=True) # Reset index to make it 0-based
+            df = df.reset_index(drop=True)
         else:
             raise ValueError(f"No data fetched for {symbol} from Yahoo Finance.")
 
-    return df
-
-def money_noodle(df, length=20, mult=2, band_type='ATR'):
-    df = df.copy()
-    # EMA as the midline
-    df['ema'] = df['close'].ewm(span=length, adjust=False).mean()
-    
-    # ATR or StdDev for band width
-    if band_type == 'ATR':
-        df['tr'] = np.maximum(df['high'] - df['low'],
-                              np.maximum(abs(df['high'] - df['close'].shift()), abs(df['low'] - df['close'].shift())))
-        df['band_width'] = df['tr'].rolling(window=length).mean()
-    else:  # StdDev
-        df['band_width'] = df['close'].rolling(window=length).std()
-    
-    # RSI for additional band expansion
-    delta = df['close'].diff()
-    up, down = delta.clip(lower=0), -delta.clip(upper=0)
-    ma_up = up.rolling(length).mean()
-    ma_down = down.rolling(length).mean()
-    rs = ma_up / (ma_down + 1e-8)
-    df['rsi'] = 100 - (100 / (1 + rs))
-    # Widen bands if RSI is overbought/oversold
-    df['band_mult'] = mult
-    df.loc[(df['rsi'] > 70) | (df['rsi'] < 30), 'band_mult'] = mult * 1.5
-
-    df['upper'] = df['ema'] + df['band_mult'] * df['band_width']
-    df['lower'] = df['ema'] - df['band_mult'] * df['band_width']
-
-    # EMA ribbon for trend strength
-    for n in [8, 21, 34]:
-        df[f'ema{n}'] = df['close'].ewm(span=n, adjust=False).mean()
     return df
 
 @app.route('/', methods=['GET', 'POST'])
@@ -188,18 +346,15 @@ def index():
     chart_div = ""
     error = None
     data_sources = list(DATA_SOURCES.keys())
-    selected_source = 'Kraken' # Changed from selected_exchange
+    selected_source = 'Kraken'
     selected_symbol = 'SOL/USD'
-    band_type = 'ATR'
     selected_timeframe = '1w'
     timeframes = ALLOWED_TIMEFRAMES
 
-    # Get symbols based on the initial selected source
     symbols = get_symbols(selected_source)
 
     if request.method == 'POST':
         selected_source = request.form.get('exchange', data_sources[0])
-        # Prioritize typed input over dropdown selection
         selected_symbol_input = request.form.get('symbol_input', '').strip().upper()
         selected_symbol_dropdown = request.form.get('symbol_dropdown', '')
         
@@ -208,40 +363,60 @@ def index():
         else:
             selected_symbol = selected_symbol_dropdown
 
-        band_type = request.form.get('band_type', 'ATR')
         selected_timeframe = request.form.get('timeframe', '1w')
-        symbols = get_symbols(selected_source) # Update symbols based on new source
-
-    # No explicit check here, let the try-except block handle invalid symbols during data fetch.
-    # Ensure selected_symbol is passed to template for persistence in input field
+        symbols = get_symbols(selected_source)
     
     try:
-        # Limit is less relevant for yfinance with period/interval, but keep for crypto
         limit = DEFAULT_LIMITS.get(selected_timeframe, 100)
         df = fetch_ohlcv(selected_source, selected_symbol, selected_timeframe, limit)
-        df = money_noodle(df, band_type=band_type)
-        signal, reasons, stop_loss, take_profit, current_price, sl_pct, tp_pct = get_signal(df)
-        # Create plotly chart
+        df = enhanced_money_noodle(df)
+        signal, reasons, stop_loss, take_profit, current_price, sl_pct, tp_pct, signal_level, indicators = get_enhanced_signal(df)
+        
+        # Create plotly chart with enhanced indicators
         trace_candles = go.Candlestick(
             x=df['timestamp'], open=df['open'], high=df['high'],
             low=df['low'], close=df['close'], name='Candles'
         )
-        trace_ema = go.Scatter(
-            x=df['timestamp'], y=df['ema'], line=dict(color='blue'), name='EMA'
+        
+        # EMA lines
+        trace_ema8 = go.Scatter(
+            x=df['timestamp'], y=df['ema8'], line=dict(color='orange', width=1), name='EMA8'
         )
+        trace_ema21 = go.Scatter(
+            x=df['timestamp'], y=df['ema21'], line=dict(color='blue', width=2), name='EMA21'
+        )
+        trace_ema34 = go.Scatter(
+            x=df['timestamp'], y=df['ema34'], line=dict(color='purple', width=1), name='EMA34'
+        )
+        
+        # Dynamic bands
         trace_upper = go.Scatter(
             x=df['timestamp'], y=df['upper'], line=dict(color='green', dash='dash'), name='Upper Band'
         )
         trace_lower = go.Scatter(
             x=df['timestamp'], y=df['lower'], line=dict(color='red', dash='dash'), name='Lower Band'
         )
-        # EMA Ribbon
-        ribbon_traces = []
-        for n, color in zip([8, 21, 34], ['orange', 'purple', 'teal']):
-            ribbon_traces.append(go.Scatter(
-                x=df['timestamp'], y=df[f'ema{n}'], line=dict(color=color, dash='dot'), name=f'EMA{n}'
-            ))
-
+        
+        # Signal markers
+        buy_signals = df[df['buy'] | df['strong_buy']]
+        sell_signals = df[df['sell'] | df['strong_sell']]
+        
+        trace_buy = go.Scatter(
+            x=buy_signals['timestamp'], 
+            y=buy_signals['low'] - buy_signals['atr'] * 0.5,
+            mode='markers',
+            marker=dict(symbol='triangle-up', size=10, color='green'),
+            name='Buy Signals'
+        )
+        
+        trace_sell = go.Scatter(
+            x=sell_signals['timestamp'], 
+            y=sell_signals['high'] + sell_signals['atr'] * 0.5,
+            mode='markers',
+            marker=dict(symbol='triangle-down', size=10, color='red'),
+            name='Sell Signals'
+        )
+        
         trace_volume = go.Bar(
             x=df['timestamp'], y=df['volume'],
             name='Volume', marker_color='lightgray',
@@ -249,22 +424,23 @@ def index():
         )
 
         layout = go.Layout(
-            title=f"{selected_symbol} Money Noodle",
+            title=f"{selected_symbol} Enhanced Money Noodle - Signal Level: {signal_level}/10",
             xaxis=dict(title="Date"),
             yaxis=dict(title="Price"),
             yaxis2=dict(
                 title="Volume", overlaying='y', side='right', showgrid=False,
-                range=[0, df['volume'].max() * 2]  # auto-scale
+                range=[0, df['volume'].max() * 2]
             ),
             height=700
         )
 
-        data = [trace_candles, trace_ema, trace_upper, trace_lower] + ribbon_traces + [trace_volume]
+        data = [trace_candles, trace_ema8, trace_ema21, trace_ema34, trace_upper, trace_lower, 
+                trace_buy, trace_sell, trace_volume]
         fig = go.Figure(data=data, layout=layout)
         chart_div = pyo.plot(fig, output_type='div', include_plotlyjs=True)
+        
     except Exception as e:
         error = f"Could not fetch or plot data for {selected_symbol} from {selected_source}. Error: {e}"
-        # Provide fallback values
         signal = None
         reasons = None
         stop_loss = None
@@ -272,124 +448,8 @@ def index():
         current_price = None
         sl_pct = None
         tp_pct = None
-        return render_template(
-            'index.html',
-            chart_div=chart_div,
-            error=error,
-            exchanges=data_sources,
-            selected_exchange=selected_source,
-            symbols=symbols,
-            selected_symbol=selected_symbol, # Pass selected_symbol to persist typed value
-            band_type=band_type,
-            timeframes=timeframes,
-            selected_timeframe=selected_timeframe,
-            signal=signal,
-            reasons=reasons,
-            stop_loss=stop_loss,
-            take_profit=take_profit,
-            current_price=current_price,
-            sl_pct=sl_pct,
-            tp_pct=tp_pct
-        )
-
-
-    return render_template(
-        'index.html',
-        chart_div=chart_div,
-        error=error,
-        exchanges=data_sources,
-        selected_exchange=selected_source,
-        symbols=symbols,
-        selected_symbol=selected_symbol, # Pass selected_symbol to persist typed value
-        band_type=band_type,
-        timeframes=timeframes,
-        selected_timeframe=selected_timeframe,
-        signal=signal,
-        reasons=reasons,
-        stop_loss=stop_loss,
-        take_profit=take_profit,
-        current_price=current_price,
-        sl_pct=sl_pct,
-        tp_pct=tp_pct
-    )
-
-    try:
-        # Limit is less relevant for yfinance with period/interval, but keep for crypto
-        limit = DEFAULT_LIMITS.get(selected_timeframe, 100)
-        df = fetch_ohlcv(selected_source, selected_symbol, selected_timeframe, limit)
-        df = money_noodle(df, band_type=band_type)
-        signal, reasons, stop_loss, take_profit, current_price, sl_pct, tp_pct = get_signal(df)
-        # Create plotly chart
-        trace_candles = go.Candlestick(
-            x=df['timestamp'], open=df['open'], high=df['high'],
-            low=df['low'], close=df['close'], name='Candles'
-        )
-        trace_ema = go.Scatter(
-            x=df['timestamp'], y=df['ema'], line=dict(color='blue'), name='EMA'
-        )
-        trace_upper = go.Scatter(
-            x=df['timestamp'], y=df['upper'], line=dict(color='green', dash='dash'), name='Upper Band'
-        )
-        trace_lower = go.Scatter(
-            x=df['timestamp'], y=df['lower'], line=dict(color='red', dash='dash'), name='Lower Band'
-        )
-        # EMA Ribbon
-        ribbon_traces = []
-        for n, color in zip([8, 21, 34], ['orange', 'purple', 'teal']):
-            ribbon_traces.append(go.Scatter(
-                x=df['timestamp'], y=df[f'ema{n}'], line=dict(color=color, dash='dot'), name=f'EMA{n}'
-            ))
-
-        trace_volume = go.Bar(
-            x=df['timestamp'], y=df['volume'],
-            name='Volume', marker_color='lightgray',
-            yaxis='y2', opacity=0.5
-        )
-
-        layout = go.Layout(
-            title=f"{selected_symbol} Money Noodle",
-            xaxis=dict(title="Date"),
-            yaxis=dict(title="Price"),
-            yaxis2=dict(
-                title="Volume", overlaying='y', side='right', showgrid=False,
-                range=[0, df['volume'].max() * 2]  # auto-scale
-            ),
-            height=700
-        )
-
-        data = [trace_candles, trace_ema, trace_upper, trace_lower] + ribbon_traces + [trace_volume]
-        fig = go.Figure(data=data, layout=layout)
-        chart_div = pyo.plot(fig, output_type='div', include_plotlyjs=True)
-    except Exception as e:
-        error = f"Could not fetch or plot data for {selected_symbol} from {selected_source}. Error: {e}"
-        # Provide fallback values
-        signal = None
-        reasons = None
-        stop_loss = None
-        take_profit = None
-        current_price = None
-        sl_pct = None
-        tp_pct = None
-        return render_template(
-            'index.html',
-            chart_div=chart_div,
-            error=error,
-            exchanges=data_sources,
-            selected_exchange=selected_source,
-            symbols=symbols,
-            selected_symbol=selected_symbol,
-            band_type=band_type,
-            timeframes=timeframes,
-            selected_timeframe=selected_timeframe,
-            signal=signal,
-            reasons=reasons,
-            stop_loss=stop_loss,
-            take_profit=take_profit,
-            current_price=current_price,
-            sl_pct=sl_pct,
-            tp_pct=tp_pct
-        )
-
+        signal_level = 1
+        indicators = {}
 
     return render_template(
         'index.html',
@@ -399,7 +459,6 @@ def index():
         selected_exchange=selected_source,
         symbols=symbols,
         selected_symbol=selected_symbol,
-        band_type=band_type,
         timeframes=timeframes,
         selected_timeframe=selected_timeframe,
         signal=signal,
@@ -408,9 +467,10 @@ def index():
         take_profit=take_profit,
         current_price=current_price,
         sl_pct=sl_pct,
-        tp_pct=tp_pct
+        tp_pct=tp_pct,
+        signal_level=signal_level,
+        indicators=indicators
     )
-
 
 if __name__ == '__main__':
     app.run(debug=True)
