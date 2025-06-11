@@ -2,8 +2,9 @@
 <html lang="en">
 <head>
     <meta charset="UTF-8">
-    <title>Money Noodle Crypto Chart</title>
+    <title>Money Noodle Chart</title>
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <link rel="icon" type="image/png" href="{{ url_for('static', filename='moneynoodle.png') }}">
     <style>
         :root {
             --accent: #2d9cdb;
@@ -15,22 +16,21 @@
             background: var(--bg);
             font-family: 'Segoe UI', 'Roboto', Arial, sans-serif;
             margin: 0;
-            padding: 0;
+            padding: 1rem; /* Add some padding for desktop view */
         }
         .container {
-            /* Remove max-width for desktop to allow full width */
-            width: 90%; /* Adjust as needed, or use 100% with padding on body */
+            width: 90%; /* Use a percentage for responsiveness */
             margin: 3rem auto; /* Center the container */
             padding: 1.5rem;
             background: var(--card-bg);
             border-radius: 1.5rem;
             box-shadow: var(--shadow);
         }
-        body {
-            background: var(--bg);
-            font-family: 'Segoe UI', 'Roboto', Arial, sans-serif;
-            margin: 0;
-            padding: 1rem; /* Add some padding for desktop view */
+        .logo {
+            display: block;
+            margin: 0 auto 1.5rem auto;
+            max-width: 200px; /* Adjust logo size as needed */
+            height: auto;
         }
         h1 {
             text-align: center;
@@ -137,6 +137,13 @@
             padding-left: 1.2em;
             margin-bottom: 1.5em;
         }
+        .section-card {
+            background: var(--card-bg);
+            border-radius: 1.5rem;
+            box-shadow: var(--shadow);
+            padding: 1.5rem;
+            margin-top: 2rem; /* Spacing between sections */
+        }
         @media (min-width: 601px) {
             .container {
                 max-width: 1200px; /* A larger max-width for desktop, or remove for truly full width */
@@ -160,7 +167,7 @@
 </head>
 <body>
     <div class="container">
-        <h1>Money Noodle Chart</h1>
+        <img src="{{ url_for('static', filename='moneynoodle.png') }}" alt="Money Noodle Logo" class="logo">
         <form method="POST">
             <div>
                 <label for="exchange">Data Source</label>
