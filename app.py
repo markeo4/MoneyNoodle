@@ -424,7 +424,7 @@ def index():
         )
 
         layout = go.Layout(
-            title=f"{selected_symbol} Enhanced Money Noodle - Signal Level: {signal_level}/10",
+            title=f"{selected_symbol} Money Noodle Chart - Signal Level: {signal_level}/10",
             xaxis=dict(title="Date"),
             yaxis=dict(title="Price"),
             yaxis2=dict(
