@@ -8,6 +8,10 @@ import plotly.offline as pyo
 from ta.momentum import RSIIndicator
 from ta.trend import EMAIndicator
 from ta.volatility import AverageTrueRange
+import json
+import csv
+import os
+from datetime import datetime
 
 app = Flask(__name__)
 
@@ -35,7 +39,7 @@ def calculate_dmi_adx(df, period=14):
     # Calculate True Range
     df['tr'] = np.maximum(df['high'] - df['low'],
                          np.maximum(abs(df['high'] - df['close'].shift(1)),
-                                   abs(df['low'] - df['close'].shift(1))))
+                                    abs(df['low'] - df['close'].shift(1))))
     
     # Calculate directional movements
     df['plus_dm'] = np.where((df['high'] - df['high'].shift(1)) > (df['low'].shift(1) - df['low']),
@@ -182,7 +186,7 @@ def enhanced_money_noodle(df, atr_length=14, atr_multiplier=2.0, rsi_length=14,
     df['swing_high'] = df['high'].rolling(window=swing_lookback).max()
     
     return df
-
+ 
 def get_enhanced_signal(df):
     """Get enhanced signal based on 10-level system"""
     if len(df) < 34:
@@ -282,13 +286,13 @@ def get_enhanced_signal(df):
     }
     
     return signal, reasons, stop_loss, take_profit, current_price, sl_pct, tp_pct, signal_level, indicators
-
+ 
 def get_symbols(source_name):
     """Return sorted list of available trading pairs/tickers for the selected source."""
     source_info = DATA_SOURCES.get(source_name)
     if not source_info:
         return []
-
+ 
     if source_info['type'] == 'crypto':
         exchange = source_info['client']
         try:
@@ -300,12 +304,12 @@ def get_symbols(source_name):
     elif source_info['type'] == 'stock':
         return sorted(['SPY', 'QQQ', 'DIA', 'AAPL', 'MSFT', 'GOOGL', 'AMZN', 'TSLA', 'NVDA', 'META'])
     return []
-
+ 
 def fetch_ohlcv(source_name, symbol, timeframe='1w', limit=100):
     source_info = DATA_SOURCES.get(source_name)
     if not source_info:
         raise ValueError(f"Unknown data source: {source_name}")
-
+ 
     df = pd.DataFrame()
     if source_info['type'] == 'crypto':
         exchange = source_info['client']
@@ -328,7 +332,7 @@ def fetch_ohlcv(source_name, symbol, timeframe='1w', limit=100):
         
         interval = yf_timeframe_map.get(timeframe, '1d')
         period = yf_period_map.get(timeframe, '2y')
-
+ 
         ticker = yf.Ticker(symbol)
         data = ticker.history(period=period, interval=interval)
         if not data.empty:
@@ -338,9 +342,32 @@ def fetch_ohlcv(source_name, symbol, timeframe='1w', limit=100):
             df = df.reset_index(drop=True)
         else:
             raise ValueError(f"No data fetched for {symbol} from Yahoo Finance.")
-
+ 
     return df
-
+ 
+def read_last_signals(file_path='last_signals.json'):
+    if os.path.exists(file_path):
+        with open(file_path, 'r') as f:
+            try:
+                data = json.load(f)
+                return {
+                    "last_run": data.get("last_run", "N/A"),
+                    "current_signals": data.get("current_signals", {}),
+                    "previous_signals": data.get("previous_signals", {})
+                }
+            except json.JSONDecodeError:
+                return {"last_run": "N/A", "current_signals": {}, "previous_signals": {}}
+    return {"last_run": "N/A", "current_signals": {}, "previous_signals": {}}
+ 
+def read_tickers_csv(file_path='tickers.csv'):
+    tickers = []
+    if os.path.exists(file_path):
+        with open(file_path, 'r') as f:
+            reader = csv.DictReader(f)
+            for row in reader:
+                tickers.append(row)
+    return tickers
+ 
 @app.route('/', methods=['GET', 'POST'])
 def index():
     chart_div = ""
@@ -350,9 +377,9 @@ def index():
     selected_symbol = 'SOL/USD'
     selected_timeframe = '1w'
     timeframes = ALLOWED_TIMEFRAMES
-
+ 
     symbols = get_symbols(selected_source)
-
+ 
     if request.method == 'POST':
         selected_source = request.form.get('exchange', data_sources[0])
         selected_symbol_input = request.form.get('symbol_input', '').strip().upper()
@@ -362,10 +389,18 @@ def index():
             selected_symbol = selected_symbol_input
         else:
             selected_symbol = selected_symbol_dropdown
-
+ 
         selected_timeframe = request.form.get('timeframe', '1w')
         symbols = get_symbols(selected_source)
     
+    # Read last signals and polled tickers
+    last_signals_data = read_last_signals()
+    polled_tickers = read_tickers_csv()
+ 
+    # Extract current and previous signals for easier access in template
+    current_poller_signals = last_signals_data.get("current_signals", {})
+    previous_poller_signals = last_signals_data.get("previous_signals", {})
+ 
     try:
         limit = DEFAULT_LIMITS.get(selected_timeframe, 100)
         df = fetch_ohlcv(selected_source, selected_symbol, selected_timeframe, limit)
@@ -402,7 +437,7 @@ def index():
         sell_signals = df[df['sell'] | df['strong_sell']]
         
         trace_buy = go.Scatter(
-            x=buy_signals['timestamp'], 
+            x=buy_signals['timestamp'],
             y=buy_signals['low'] - buy_signals['atr'] * 0.5,
             mode='markers',
             marker=dict(symbol='triangle-up', size=10, color='green'),
@@ -410,7 +445,7 @@ def index():
         )
         
         trace_sell = go.Scatter(
-            x=sell_signals['timestamp'], 
+            x=sell_signals['timestamp'],
             y=sell_signals['high'] + sell_signals['atr'] * 0.5,
             mode='markers',
             marker=dict(symbol='triangle-down', size=10, color='red'),
@@ -422,7 +457,7 @@ def index():
             name='Volume', marker_color='lightgray',
             yaxis='y2', opacity=0.5
         )
-
+ 
         layout = go.Layout(
             title=f"{selected_symbol} Money Noodle Chart - Signal Level: {signal_level}/10",
             xaxis=dict(title="Date"),
@@ -433,8 +468,8 @@ def index():
             ),
             height=700
         )
-
-        data = [trace_candles, trace_ema8, trace_ema21, trace_ema34, trace_upper, trace_lower, 
+ 
+        data = [trace_candles, trace_ema8, trace_ema21, trace_ema34, trace_upper, trace_lower,
                 trace_buy, trace_sell, trace_volume]
         fig = go.Figure(data=data, layout=layout)
         chart_div = pyo.plot(fig, output_type='div', include_plotlyjs=True)
@@ -450,7 +485,7 @@ def index():
         tp_pct = None
         signal_level = 1
         indicators = {}
-
+ 
     return render_template(
         'index.html',
         chart_div=chart_div,
@@ -469,8 +504,12 @@ def index():
         sl_pct=sl_pct,
         tp_pct=tp_pct,
         signal_level=signal_level,
-        indicators=indicators
+        indicators=indicators,
+        last_signals_data=last_signals_data,
+        polled_tickers=polled_tickers,
+        current_poller_signals=current_poller_signals,
+        previous_poller_signals=previous_poller_signals
     )
-
+ 
 if __name__ == '__main__':
     app.run(debug=True)

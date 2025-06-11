@@ -179,7 +179,7 @@
                 </select>
                 <label for="symbol_input">Or type ticker:</label>
                 <input type="text" name="symbol_input" id="symbol_input"
-                    value="" 
+                    value="{{ selected_symbol if selected_symbol not in symbols else '' }}"
                     placeholder="e.g., SPY, BTC/USD">
             </div>
             <div>
@@ -206,7 +206,7 @@
         {% if signal %}
             <h2>
                 Signal:
-                <span class="signal-badge 
+                <span class="signal-badge
                     {% if signal == 'BUY' or signal == 'STRONG BUY' %}signal-buy
                     {% elif signal == 'SELL' or signal == 'STRONG SELL' %}signal-sell
                     {% else %}signal-wait{% endif %}">{{ signal }}</span>
@@ -305,6 +305,104 @@
 
         <div style="width: 100%; overflow-x: auto;">
             {{ chart_div|safe }}
+        </div>
+
+        <div class="section-card">
+            <h2>Last Poller Run Results</h2>
+            {% if last_signals_data %}
+                <p>Last Run: <b>{{ last_signals_data.last_run }}</b></p>
+                {% if current_poller_signals %}
+                    <table class="score-table">
+                        <thead>
+                            <tr>
+                                <th>Source</th>
+                                <th>Symbol</th>
+                                <th>Timeframe</th>
+                                <th>Current Signal</th>
+                                <th>Previous Signal</th>
+                                <th>Change</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            {% for ticker_full, current_signal in current_poller_signals.items() %}
+                                {% set parts = ticker_full.split(':') %}
+                                {% set source = parts[0] %}
+                                {% set symbol = parts[1] %}
+                                {% set timeframe = parts[2] %}
+                                {% set previous_signal = previous_poller_signals.get(ticker_full, 'N/A') %}
+                                <tr>
+                                    <td>{{ source }}</td>
+                                    <td>{{ symbol }}</td>
+                                    <td>{{ timeframe }}</td>
+                                    <td>
+                                        <span class="signal-badge
+                                            {% if current_signal == 'BUY' or current_signal == 'STRONG BUY' %}signal-buy
+                                            {% elif current_signal == 'SELL' or current_signal == 'STRONG SELL' %}signal-sell
+                                            {% else %}signal-wait{% endif %}">
+                                            {{ current_signal }}
+                                        </span>
+                                    </td>
+                                    <td>
+                                        {% if previous_signal != 'N/A' %}
+                                            <span class="signal-badge
+                                                {% if previous_signal == 'BUY' or previous_signal == 'STRONG BUY' %}signal-buy
+                                                {% elif previous_signal == 'SELL' or previous_signal == 'STRONG SELL' %}signal-sell
+                                                {% else %}signal-wait{% endif %}">
+                                                {{ previous_signal }}
+                                            </span>
+                                        {% else %}
+                                            N/A
+                                        {% endif %}
+                                    </td>
+                                    <td>
+                                        {% if current_signal != previous_signal and previous_signal != 'N/A' %}
+                                            {% if current_signal in ['BUY', 'STRONG BUY'] and previous_signal in ['SELL', 'STRONG SELL', 'HOLD', 'WAIT'] %}
+                                                <span style="color: green; font-weight: bold;">&#8593;</span>
+                                            {% elif current_signal in ['SELL', 'STRONG SELL'] and previous_signal in ['BUY', 'STRONG BUY', 'HOLD', 'WAIT'] %}
+                                                <span style="color: red; font-weight: bold;">&#8595;</span>
+                                            {% else %}
+                                                <span style="color: orange; font-weight: bold;">&#8596;</span>
+                                            {% endif %}
+                                        {% else %}
+                                            —
+                                        {% endif %}
+                                    </td>
+                                </tr>
+                            {% endfor %}
+                        </tbody>
+                    </table>
+                {% else %}
+                    <p>No signals generated in the last run.</p>
+                {% endif %}
+            {% else %}
+                <p>No data available for last poller run results.</p>
+            {% endif %}
+        </div>
+
+        <div class="section-card">
+            <h2>Polled Tickers</h2>
+            {% if polled_tickers %}
+                <table class="score-table">
+                    <thead>
+                        <tr>
+                            <th>Source</th>
+                            <th>Symbol</th>
+                            <th>Timeframe</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        {% for ticker in polled_tickers %}
+                            <tr>
+                                <td>{{ ticker.source }}</td>
+                                <td>{{ ticker.symbol }}</td>
+                                <td>{{ ticker.timeframe }}</td>
+                            </tr>
+                        {% endfor %}
+                    </tbody>
+                </table>
+            {% else %}
+                <p>No polled tickers found.</p>
+            {% endif %}
         </div>
     </div>
     <script>

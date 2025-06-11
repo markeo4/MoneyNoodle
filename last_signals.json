@@ -1,0 +1,12 @@
+{
+  "last_run": "2025-06-11T08:13:24.939456",
+  "current_signals": {
+    "Yahoo Finance:SPY:4h": "BUY",
+    "Yahoo Finance:SPY:1h": "BUY",
+    "Yahoo Finance:QQQ:4h": "BUY",
+    "Kraken:BTC/USD:4h": "HOLD",
+    "Kraken:SOL/USD:4h": "BUY",
+    "Kraken:ETH/USD:4h": "HOLD"
+  },
+  "previous_signals": {}
+}
