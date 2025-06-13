@@ -21,8 +21,8 @@ DATA_SOURCES = {
     'Yahoo Finance': {'type': 'stock', 'client': None}
 }
 
-ALLOWED_TIMEFRAMES = ['1h', '4h', '1d', '1w']
-DEFAULT_LIMITS = {'1h': 200, '4h': 150, '1d': 100, '1w': 52}
+ALLOWED_TIMEFRAMES = ['5m', '15m', '30m', '1h', '4h', '1d', '1w']
+DEFAULT_LIMITS = {'5m': 300, '15m': 250, '30m': 200, '1h': 200, '4h': 150, '1d': 100, '1w': 52}
 
 def calculate_awesome_oscillator(df, short_period=5, long_period=34):
     """Calculate Awesome Oscillator"""
